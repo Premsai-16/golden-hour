@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>GoldenHour - Hospital Dashboard</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/extra.css">
+</head>
+<body>
+  <header><a href="/">Golden<span>Hour</span></a><span id="net" class="badge">Connecting...</span></header>
+  <main>
+    <div class="card" id="startCard">
+      <h2>Hospital sign-in</h2>
+      <input id="hname" placeholder="Hospital name">
+      <button class="primary" id="startBtn">Open dashboard (uses this device's location)</button>
+      <p id="startMsg" class="muted"></p>
+    </div>
+
+    <div id="dash" hidden>
+      <div class="card row">
+        <div><h2 id="title"></h2><p class="muted" id="locInfo"></p></div>
+        <button id="demoBtn">Add demo hospitals</button>
+      </div>
+
+      <div id="map"></div>
+
+      <h2>🚨 Incoming alerts</h2>
+      <div id="incoming"><p class="muted" id="noAlerts">No alerts yet.</p></div>
+
+      <div class="card" id="stockCard">
+        <h2>Resources</h2>
+        <div class="stock-grid">
+          <div class="stock"><span>🛏 Beds</span><button data-k="beds" data-d="-1">−</button><b id="beds">0</b><button data-k="beds" data-d="1">+</button></div>
+          <div class="stock"><span>🚑 Ambulances</span><button data-k="ambulances" data-d="-1">−</button><b id="amb">0</b><button data-k="ambulances" data-d="1">+</button></div>
+        </div>
+        <h3 style="margin-top:14px">🩸 Blood stock (units)</h3>
+        <div class="stock-grid" id="blood"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const LABELS = { accident: '🚗 Accident', blood: '🩸 Blood needed', ambulance: '🚑 Ambulance', other: '⚠️ Other' };
+    const BG = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+    const btn = (id, act, label, cls) => '<button class="' + (cls || '') + '" data-act="' + act + '" data-id="' + id + '">' + label + '</button>';
+
+    const socket = io();
+    let hospital = null, map = null;
+    const cards = {};
+
+    // ---------- Stock ----------
+    let stock = { beds: 10, ambulances: 2, blood: {} };
+    BG.forEach((g) => (stock.blood[g] = 5));
+    try { const s = JSON.parse(localStorage.getItem('gh_stock')); if (s) stock = s; } catch (e) {}
+
+    function renderStock() {
+      $('beds').textContent = stock.beds;
+      $('amb').textContent = stock.ambulances;
+      $('blood').innerHTML = BG.map((g) =>
+        '<div class="stock"><span>' + g + '</span>' +
+        '<button data-k="blood" data-g="' + g + '" data-d="-1">−</button><b>' + stock.blood[g] + '</b>' +
+        '<button data-k="blood" data-g="' + g + '" data-d="1">+</button></div>').join('');
+    }
+    $('stockCard').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const d = parseInt(b.dataset.d, 10);
+      if (b.dataset.k === 'blood') stock.blood[b.dataset.g] = Math.max(0, stock.blood[b.dataset.g] + d);
+      else stock[b.dataset.k] = Math.max(0, stock[b.dataset.k] + d);
+      localStorage.setItem('gh_stock', JSON.stringify(stock));
+      renderStock();
+      socket.emit('hospital-update', stock);
+    });
+
+    // ---------- Register ----------
+    $('hname').value = localStorage.getItem('gh_hname') || '';
+    $('startBtn').addEventListener('click', () => {
+      const name = $('hname').value.trim() || 'My Hospital';
+      localStorage.setItem('gh_hname', name);
+      $('startMsg').textContent = 'Finding location...';
+      navigator.geolocation.getCurrentPosition((pos) => {
+        hospital = { name, lat: pos.coords.latitude, lng: pos.coords.longitude };
+        register(true);
+      }, (err) => { $('startMsg').textContent = 'Location problem: ' + err.message; }, { enableHighAccuracy: true, timeout: 10000 });
+    });
+
+    function register(first) {
+      socket.emit('hospital-register', { ...hospital, stock }, (res) => {
+        if (!res.ok) { $('startMsg').textContent = res.error; return; }
+        if (first) {
+          $('startCard').hidden = true; $('dash').hidden = false;
+          $('title').textContent = '🏥 ' + hospital.name;
+          $('locInfo').textContent = 'Location: ' + hospital.lat.toFixed(4) + ', ' + hospital.lng.toFixed(4);
+          map = L.map('map').setView([hospital.lat, hospital.lng], 14);
+          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+          L.circleMarker([hospital.lat, hospital.lng], { radius: 11, color: '#15803d', fillColor: '#22c55e', fillOpacity: 1 })
+            .addTo(map).bindPopup('Your hospital');
+          renderStock();
+        }
+        res.incidents.forEach((i) => upsert(i));
+      });
+    }
+    socket.on('connect', () => { $('net').textContent = 'Online'; $('net').className = 'badge online'; if (hospital) register(false); });
+    socket.on('disconnect', () => { $('net').textContent = 'Offline'; $('net').className = 'badge offline'; });
+
+    $('demoBtn').addEventListener('click', () => {
+      socket.emit('demo-hospitals', { lat: hospital.lat, lng: hospital.lng }, () => { $('demoBtn').textContent = 'Demo hospitals added ✓'; });
+    });
+
+    // ---------- Alerts (drawn ONLY from the server's state) ----------
+    const km = (a, b, c, d) => {
+      const r = (x) => x * Math.PI / 180, dLat = r(c - a), dLng = r(d - b);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dLng / 2) ** 2;
+      return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    };
+
+    function render(c) {
+      const i = c.inc, active = i.status === 'active';
+      const dist = km(hospital.lat, hospital.lng, i.lat, i.lng).toFixed(1);
+      const vols = i.volunteers.length
+        ? i.volunteers.map((v) => '<span class="vol ' + (v.state === 'arrived' ? 'arrived' : '') + '">' + esc(v.name) +
+            (v.state === 'arrived' ? ' ✔ arrived' : ' on the way') + '</span>').join('')
+        : '<span class="muted">No volunteer on the way yet</span>';
+
+      let actions;
+      if (!active) {
+        actions = i.status === 'resolved' ? '<div class="banner ok">✅ Resolved</div>'
+          : i.status === 'cancelled' ? '<div class="banner info">Cancelled by the reporter</div>'
+          : '<div class="banner bad">❌ Marked as a fake report</div>';
+      } else if (i.stage === 'reported') {
+        actions = '<div class="banner info">⏱ Please respond. With no answer in 45 s this alert moves to the next hospital.</div>' +
+          '<div class="row">' + btn(i.id, 'accept', '✅ Accept &amp; prepare', 'primary') + btn(i.id, 'decline', 'Decline (no capacity)', 'danger') + btn(i.id, 'map', 'Map') + '</div>';
+      } else if (i.stage === 'accepted') {
+        actions = '<div class="row">' + btn(i.id, 'dispatch', '🚑 Ambulance dispatched', 'primary') + btn(i.id, 'resolve', 'Mark resolved') + btn(i.id, 'map', 'Map') + '</div>';
+      } else {
+        actions = '<div class="row">' + btn(i.id, 'resolve', '✔ Mark resolved', 'primary') + btn(i.id, 'map', 'Map') + '</div>';
+      }
+
+      c.el.innerHTML =
+        '<div class="row"><b>' + LABELS[i.type] + (i.bloodGroup ? ' (' + esc(i.bloodGroup) + ')' : '') + '</b><span class="tag">' + dist + ' km</span></div>' +
+        '<p class="muted">' + esc(i.id) + ' · ' + i.reportCount + ' report(s)</p>' +
+        '<p>' + vols + '</p>' + actions +
+        '<ul class="timeline">' + i.events.slice(-5).map((e) =>
+          '<li>' + esc(e.text) + '<small>' + new Date(e.t).toLocaleTimeString('en-GB') + '</small></li>').join('') + '</ul>';
+
+      if (!active && !c.closing) {
+        c.closing = true;
+        c.marker.setStyle({ color: '#64748b', fillColor: '#94a3b8' });
+        setTimeout(() => { c.el.classList.add('fade-out'); setTimeout(() => removeCard(i.id), 700); }, 20000);
+      }
+    }
+
+    function removeCard(id) {
+      const c = cards[id];
+      if (!c) return;
+      c.marker.remove(); c.el.remove(); delete cards[id];
+    }
+
+    function upsert(inc) {
+      let c = cards[inc.id], isNew = false;
+      if (!c) {
+        isNew = true;
+        if ($('noAlerts')) $('noAlerts').remove();
+        const el = document.createElement('div');
+        el.className = 'card alert-card';
+        $('incoming').prepend(el);
+        const marker = L.circleMarker([inc.lat, inc.lng], { radius: 11, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 0.9 }).addTo(map);
+        c = cards[inc.id] = { el, inc, marker, closing: false };
+        map.fitBounds([[hospital.lat, hospital.lng], [inc.lat, inc.lng]], { padding: [40, 40] });
+      }
+      c.inc = inc;
+      render(c);
+      return isNew;
+    }
+
+    function beep() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); o.frequency.value = 660; o.connect(ctx.destination); o.start();
+        setTimeout(() => { o.stop(); ctx.close(); }, 500);
+      } catch (e) {}
+    }
+
+    socket.on('incoming-alert', (inc) => { if (upsert(inc)) beep(); });
+    socket.on('incident-update', (inc) => { if (cards[inc.id]) upsert(inc); });
+    socket.on('incident-withdrawn', (d) => removeCard(d.id));
+
+    $('incoming').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const id = b.dataset.id, c = cards[id], act = b.dataset.act;
+      if (!c) return;
+      if (act === 'map') map.fitBounds([[hospital.lat, hospital.lng], [c.inc.lat, c.inc.lng]], { padding: [40, 40] });
+      else socket.emit('hospital-action', { incidentId: id, action: act });   // accept | decline | dispatch | resolve
+    });
+
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+  </script>
+</body>
+</html>

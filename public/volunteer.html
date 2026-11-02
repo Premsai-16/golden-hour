@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>GoldenHour - Volunteer</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/extra.css">
+</head>
+<body>
+  <header><a href="/">Golden<span>Hour</span></a><span id="net" class="badge">Connecting...</span></header>
+  <main>
+    <div class="card" id="joinCard">
+      <h2>Volunteer sign-in</h2>
+      <p class="muted">Only verified volunteers receive alerts. Demo code: <b>GOLD123</b></p>
+      <input id="name" placeholder="Your name">
+      <input id="code" placeholder="Volunteer code">
+      <button class="primary" id="joinBtn">Start receiving alerts</button>
+      <p id="joinMsg" class="muted"></p>
+    </div>
+
+    <div id="dash" hidden>
+      <div class="card"><p id="locMsg">Getting your location...</p></div>
+      <div id="map"></div>
+      <div id="alerts"></div>
+    </div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const LABELS = { accident: '🚗 Accident', blood: '🩸 Blood needed', ambulance: '🚑 Ambulance', other: '⚠️ Other' };
+    const STAGE = { reported: 'Hospital notified', accepted: 'Hospital is preparing', dispatched: 'Ambulance dispatched 🚑' };
+    const btn = (id, act, label, cls) => '<button class="' + (cls || '') + '" data-act="' + act + '" data-id="' + id + '">' + label + '</button>';
+
+    const socket = io();
+    let creds = null, watching = false, myPos = null, map = null, me = null;
+    const cards = {};      // incidentId -> { el, inc, dist, marker, closing }
+    const mine = {};       // incidentId -> 'coming' | 'arrived'
+
+    // ---------- Sign in ----------
+    try { creds = JSON.parse(localStorage.getItem('gh_vol')); } catch (e) {}
+    if (creds) { $('name').value = creds.name; $('code').value = creds.code; }
+
+    function join() {
+      if (!creds) return;
+      socket.emit('volunteer-join', creds, (res) => {
+        if (!res.ok) { $('joinMsg').textContent = res.error; $('joinCard').hidden = false; $('dash').hidden = true; return; }
+        localStorage.setItem('gh_vol', JSON.stringify(creds));
+        $('joinCard').hidden = true; $('dash').hidden = false;
+        if (myPos) socket.emit('volunteer-location', myPos);     // after a reconnect
+        startLocation();
+      });
+    }
+    $('joinBtn').addEventListener('click', () => {
+      creds = { name: $('name').value.trim() || 'Volunteer', code: $('code').value.trim() };
+      join();
+    });
+    socket.on('connect', () => { $('net').textContent = 'Online'; $('net').className = 'badge online'; if (creds) join(); });
+    socket.on('disconnect', () => { $('net').textContent = 'Offline'; $('net').className = 'badge offline'; });
+
+    // ---------- Location + map ----------
+    function startLocation() {
+      if (watching) return;
+      watching = true;
+      navigator.geolocation.watchPosition((pos) => {
+        myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        $('locMsg').textContent = '📍 Location shared. Waiting for emergencies near you...';
+        if (!map) {
+          map = L.map('map').setView([myPos.lat, myPos.lng], 14);
+          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+          me = L.circleMarker([myPos.lat, myPos.lng], { radius: 9, color: '#1d4ed8', fillColor: '#3b82f6', fillOpacity: 1 })
+            .addTo(map).bindPopup('You are here');
+        } else { me.setLatLng([myPos.lat, myPos.lng]); }
+        socket.emit('volunteer-location', myPos);
+      }, (err) => { $('locMsg').textContent = 'Location problem: ' + err.message; },
+      { enableHighAccuracy: true, maximumAge: 10000 });
+    }
+
+    // ---------- Alert cards (drawn ONLY from the server's state) ----------
+    function render(c) {
+      const i = c.inc, active = i.status === 'active', st = mine[i.id];
+      const dist = c.dist < 1 ? Math.round(c.dist * 1000) + ' m' : c.dist.toFixed(1) + ' km';
+
+      const vols = i.volunteers.length
+        ? i.volunteers.map((v) => '<span class="vol ' + (v.state === 'arrived' ? 'arrived' : '') + '">' + esc(v.name) +
+            (v.state === 'arrived' ? ' ✔ arrived' : ' on the way') + '</span>').join('')
+        : '<span class="muted">No volunteer on the way yet</span>';
+
+      let actions;
+      if (!active) {
+        actions = i.status === 'resolved' ? '<div class="banner ok">✅ Resolved. Thank you for being ready to help!</div>'
+          : i.status === 'cancelled' ? '<div class="banner info">The reporter cancelled this SOS. You can stand down.</div>'
+          : '<div class="banner bad">❌ Cancelled: marked as a fake report.</div>';
+      } else if (st === 'arrived') {
+        actions = '<div class="banner ok">✔ You have arrived. Thank you!</div>' + btn(i.id, 'map', 'Map');
+      } else if (st === 'coming') {
+        actions = '<div class="row">' + btn(i.id, 'arrived', "I've arrived", 'primary') + btn(i.id, 'map', 'Map') + '</div>';
+      } else {
+        actions = '<div class="row">' + btn(i.id, 'come', "I'm coming", 'primary') + btn(i.id, 'map', 'Map') + btn(i.id, 'fake', 'Fake?', 'danger') + '</div>';
+      }
+
+      c.el.innerHTML =
+        '<div class="row"><b>' + LABELS[i.type] + (i.bloodGroup ? ' (' + esc(i.bloodGroup) + ')' : '') + '</b>' +
+        '<span class="tag">' + dist + ' away</span></div>' +
+        '<p class="muted">' + i.reportCount + ' report(s) · ' + esc(i.hospitalName || 'finding hospital...') +
+          (active ? ' · ' + STAGE[i.stage] : '') + '</p>' +
+        '<p>' + vols + '</p>' + actions;
+
+      // finished emergencies fade away after 15 seconds
+      if (!active && !c.closing) {
+        c.closing = true;
+        c.marker.setStyle({ color: '#64748b', fillColor: '#94a3b8' });
+        setTimeout(() => { c.el.classList.add('fade-out'); setTimeout(() => removeCard(i.id), 700); }, 15000);
+      }
+    }
+
+    function removeCard(id) {
+      const c = cards[id];
+      if (!c) return;
+      c.marker.remove(); c.el.remove();
+      delete cards[id]; delete mine[id];
+    }
+
+    function upsert(inc, dist) {
+      let c = cards[inc.id];
+      if (!c) {
+        const el = document.createElement('div');
+        el.className = 'card alert-card';
+        $('alerts').prepend(el);
+        const marker = L.circleMarker([inc.lat, inc.lng], { radius: 11, color: '#b91c1c', fillColor: '#ef4444', fillOpacity: 0.9 })
+          .addTo(map).bindPopup(LABELS[inc.type]);
+        c = cards[inc.id] = { el, inc, dist: dist ?? 0, marker, closing: false };
+      }
+      if (dist !== undefined) c.dist = dist;
+      c.inc = inc;
+      render(c);
+      return c;
+    }
+
+    function beep() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); o.frequency.value = 880; o.connect(ctx.destination); o.start();
+        setTimeout(() => { o.stop(); ctx.close(); }, 400);
+      } catch (e) {}
+    }
+
+    socket.on('new-alert', (inc) => {
+      if (!map) return;
+      const isNew = !cards[inc.id];
+      const c = upsert(inc, inc.distanceKm);
+      if (isNew) {
+        beep(); if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+        map.fitBounds([[myPos.lat, myPos.lng], [c.inc.lat, c.inc.lng]], { padding: [40, 40] });
+      }
+    });
+    socket.on('incident-update', (inc) => { if (cards[inc.id]) upsert(inc); });
+    socket.on('sync-active', (ids) => {
+      Object.keys(cards).forEach((id) => { if (cards[id].inc.status === 'active' && !ids.includes(id)) removeCard(id); });
+    });
+
+    $('alerts').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const id = b.dataset.id, c = cards[id];
+      if (!c) return;
+      if (b.dataset.act === 'come') { mine[id] = 'coming'; socket.emit('coming', { incidentId: id }); render(c); }
+      if (b.dataset.act === 'arrived') { mine[id] = 'arrived'; socket.emit('arrived', { incidentId: id }); render(c); }
+      if (b.dataset.act === 'map') map.fitBounds([[myPos.lat, myPos.lng], [c.inc.lat, c.inc.lng]], { padding: [40, 40] });
+      if (b.dataset.act === 'fake' && confirm('Report this alert as fake?')) socket.emit('flag-fake', { incidentId: id });
+    });
+
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+  </script>
+</body>
+</html>

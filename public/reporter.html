@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>GoldenHour - Reporter</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/extra.css">
+</head>
+<body>
+  <header><a href="/">Golden<span>Hour</span></a><span id="net" class="badge">Connecting...</span></header>
+  <main>
+    <div class="card">
+      <h2>What happened?</h2>
+      <div class="types" id="types">
+        <button class="type-btn active" data-type="accident">🚗 Accident</button>
+        <button class="type-btn" data-type="blood">🩸 Blood needed</button>
+        <button class="type-btn" data-type="ambulance">🚑 Ambulance</button>
+        <button class="type-btn" data-type="other">⚠️ Other</button>
+      </div>
+      <div id="bloodRow" hidden>
+        <p class="muted">Blood group needed</p>
+        <select id="blood">
+          <option>A+</option><option>A-</option><option>B+</option><option>B-</option>
+          <option>O+</option><option>O-</option><option>AB+</option><option>AB-</option>
+        </select>
+      </div>
+    </div>
+
+    <button id="sos" class="sos">SOS</button>
+    <p id="hint" class="center muted">Pick the emergency type, then press SOS.</p>
+
+    <div class="card" id="queueCard" hidden>
+      <h3>📦 Saved on this phone</h3>
+      <p id="queueText"></p>
+      <p id="retryText" class="muted"></p>
+    </div>
+
+    <div class="card" id="statusCard" hidden>
+      <div class="row"><h3>Live status</h3><span id="stBadge" class="tag"></span></div>
+      <div id="stBanner"></div>
+      <p id="stHospital"></p>
+      <p id="stVol"></p>
+      <p id="stReports" class="muted"></p>
+      <ul class="timeline" id="timeline"></ul>
+      <button class="danger" id="cancelBtn">Cancel SOS (I am safe)</button>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+
+    let deviceId = localStorage.getItem('gh_device');
+    if (!deviceId) { deviceId = uid(); localStorage.setItem('gh_device', deviceId); }
+
+    const socket = io();
+    let type = 'accident';
+    let currentId = null;
+
+    $('types').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      type = b.dataset.type;
+      document.querySelectorAll('.type-btn').forEach((x) => x.classList.toggle('active', x === b));
+      $('bloodRow').hidden = type !== 'blood';
+    });
+
+    // ---------- Online / offline ----------
+    const canSend = () => navigator.onLine && socket.connected;
+    function updateNet() {
+      const on = canSend();
+      $('net').textContent = on ? 'Online' : 'Offline';
+      $('net').className = 'badge ' + (on ? 'online' : 'offline');
+    }
+
+    // ---------- OFFLINE QUEUE ----------
+    const getQueue = () => { try { return JSON.parse(localStorage.getItem('gh_queue')) || []; } catch (e) { return []; } };
+    const saveQueue = (q) => localStorage.setItem('gh_queue', JSON.stringify(q));
+    function renderQueue() {
+      const n = getQueue().length;
+      $('queueCard').hidden = n === 0;
+      $('queueText').textContent = n + ' report(s) waiting to be sent.' + (canSend() ? '' : ' No signal right now.');
+    }
+
+    // ---------- Retry with EXPONENTIAL BACKOFF ----------
+    let flushing = false, attempt = 0, retryTimer = null;
+    function scheduleRetry() {
+      attempt++;
+      const delay = Math.min(1000 * 2 ** attempt, 30000);
+      $('retryText').textContent = 'Retry #' + attempt + ' in ' + delay / 1000 + ' s';
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(flushQueue, delay);
+    }
+    function flushQueue() {
+      renderQueue(); updateNet();
+      if (flushing) return;
+      const queue = getQueue();
+      if (queue.length === 0) { attempt = 0; $('retryText').textContent = ''; return; }
+      if (!canSend()) return;
+
+      flushing = true;
+      const report = queue[0];
+      let answered = false;
+      const timeout = setTimeout(() => {
+        if (answered) return;
+        answered = true; flushing = false; scheduleRetry();
+      }, 4000);
+
+      socket.emit('sos', report, (res) => {          // ACK callback from the server
+        if (answered) return;
+        answered = true; clearTimeout(timeout);
+        flushing = false; attempt = 0;
+        saveQueue(getQueue().filter((r) => r.reportId !== report.reportId));
+        handleResult(res);
+        flushQueue();
+      });
+    }
+
+    function handleResult(res) {
+      if (res.ok) {
+        showStatus(res);
+        $('hint').textContent = res.duplicate ? 'Report already received.'
+          : res.merged ? 'Merged with a nearby report of the same emergency.' : 'SOS delivered!';
+      } else {
+        $('hint').textContent = 'Not sent: ' + res.error;
+      }
+    }
+
+    // ---------- Live status (drawn ONLY from what the server says) ----------
+    const STAGE = {
+      reported: 'notified, waiting for confirmation',
+      accepted: 'accepted and preparing',
+      dispatched: 'ambulance dispatched 🚑'
+    };
+    function showStatus(s) {
+      currentId = s.incidentId;
+      const active = s.status === 'active';
+      $('statusCard').hidden = false;
+      $('stBadge').textContent = s.status.toUpperCase();
+
+      $('stBanner').innerHTML =
+        s.status === 'resolved' ? '<div class="banner ok">✅ Help completed. Stay safe!</div>' :
+        s.status === 'cancelled' ? '<div class="banner info">SOS cancelled.</div>' :
+        s.status === 'fake' ? '<div class="banner bad">❌ Marked as a fake report by volunteers.</div>' : '';
+
+      // Finished emergencies show only the banner and the history, never "on the way"
+      $('stHospital').innerHTML = active
+        ? '🏥 ' + (s.hospitalName ? '<b>' + esc(s.hospitalName) + '</b> (' + s.hospitalKm.toFixed(1) + ' km): ' + STAGE[s.stage]
+                                  : 'Looking for a hospital with capacity...')
+        : '';
+      $('stVol').innerHTML = active
+        ? (s.volunteers.length
+            ? '🙋 ' + s.volunteers.map((v) => '<span class="vol ' + (v.state === 'arrived' ? 'arrived' : '') + '">' +
+                esc(v.name) + (v.state === 'arrived' ? ' ✔ arrived' : ' on the way') + '</span>').join('')
+            : '📢 ' + s.volunteersNotified + ' volunteer(s) alerted nearby, none on the way yet')
+        : '';
+      $('stReports').textContent = s.reportCount + ' report(s) for this emergency';
+      $('timeline').innerHTML = s.events.map((e) =>
+        '<li>' + esc(e.text) + '<small>' + new Date(e.t).toLocaleTimeString('en-GB') + '</small></li>').join('');
+      $('cancelBtn').hidden = !active;
+    }
+
+    $('cancelBtn').addEventListener('click', () => {
+      if (currentId && confirm('Cancel this SOS?')) socket.emit('cancel-sos', { incidentId: currentId, deviceId });
+    });
+
+    // ---------- Press SOS ----------
+    $('sos').addEventListener('click', () => {
+      $('hint').textContent = 'Finding your location...';
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const report = {
+          reportId: uid(), deviceId, type,
+          bloodGroup: type === 'blood' ? $('blood').value : null,
+          lat: pos.coords.latitude, lng: pos.coords.longitude, createdAt: Date.now()
+        };
+        saveQueue([...getQueue(), report]);          // ALWAYS save first, then try to send
+        $('hint').textContent = canSend() ? 'Sending...' : 'No internet. Saved on your phone; it will send automatically.';
+        flushQueue();
+      }, (err) => {
+        $('hint').textContent = 'Could not get location: ' + err.message;
+      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+    });
+
+    // ---------- Socket events ----------
+    socket.on('connect', () => { socket.emit('reporter-join', deviceId); flushQueue(); });
+    socket.on('disconnect', () => { updateNet(); renderQueue(); });
+    socket.on('incident-status', showStatus);
+    window.addEventListener('online', () => { if (!socket.connected) socket.connect(); flushQueue(); });
+    window.addEventListener('offline', () => { updateNet(); renderQueue(); });
+
+    updateNet(); renderQueue();
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+  </script>
+</body>
+</html>

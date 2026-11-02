@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoldenHour - Live Demo</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .wrap { max-width:1560px; margin:0 auto; padding:16px; }
+    .how { display:flex; gap:18px; flex-wrap:wrap; padding:12px 18px; margin-bottom:14px; font-size:14px; }
+    .how b { color:var(--red); }
+    .stage { display:grid; grid-template-columns:minmax(420px,1.6fr) 372px 372px; gap:20px; align-items:start; }
+    .label { margin:0 0 8px 4px; font-weight:700; }
+    .laptop { border:9px solid #0f172a; border-radius:16px 16px 6px 6px; overflow:hidden; background:#fff; box-shadow:0 18px 44px rgba(15,23,42,.25); }
+    .phone { border:11px solid #0f172a; border-radius:38px; overflow:hidden; background:#fff; box-shadow:0 18px 44px rgba(15,23,42,.25); }
+    iframe { display:block; width:100%; height:660px; border:0; }
+    .log { margin-top:18px; height:200px; overflow:auto; padding:12px 16px; border-radius:14px; background:#0b1220; color:#cbd5e1; font:12.5px/1.7 ui-monospace,Menlo,Consolas,monospace; }
+    .log .t { color:#64748b; }
+    .log .src { font-weight:700; }
+    .src.reporter { color:#f87171; } .src.volunteer { color:#60a5fa; } .src.hospital { color:#4ade80; } .src.system { color:#fbbf24; }
+    .loghead { margin:18px 4px 6px; font-weight:700; }
+    @media (max-width:1280px) { .stage { grid-template-columns:1fr; justify-items:center; } .laptop { width:100%; } }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">Golden<span>Hour</span> &nbsp;<span style="color:#94a3b8;font-weight:500;font-size:15px">Live demo</span></a>
+    <div class="row">
+      <button id="offBtn">📴 Simulate reporter offline</button>
+      <button id="restartBtn">↻ Restart demo</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="card how">
+      <span><b>1.</b> Allow location once</span>
+      <span><b>2.</b> Press <b>SOS</b> on the reporter phone</span>
+      <span><b>3.</b> Watch the hospital and volunteer react live</span>
+      <span><b>4.</b> Tap <b>I'm coming</b> and watch the reporter update</span>
+      <span><b>5.</b> Click <b>Simulate offline</b>, press SOS, then bring it back online</span>
+    </div>
+
+    <div class="stage">
+      <div style="width:100%">
+        <p class="label">🏥 Hospital dashboard (laptop)</p>
+        <div class="laptop"><iframe id="fHospital" data-src="/hospital.html" allow="geolocation"></iframe></div>
+      </div>
+      <div>
+        <p class="label">🚨 Reporter (phone)</p>
+        <div class="phone"><iframe id="fReporter" data-src="/reporter.html" allow="geolocation"></iframe></div>
+      </div>
+      <div>
+        <p class="label">🙋 Volunteer (phone)</p>
+        <div class="phone"><iframe id="fVolunteer" data-src="/volunteer.html" allow="geolocation"></iframe></div>
+      </div>
+    </div>
+
+    <p class="loghead">📡 Live network log (every WebSocket event: ⬆ sent, ⬇ received)</p>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const frames = { hospital: $('fHospital'), reporter: $('fReporter'), volunteer: $('fVolunteer') };
+
+    // Pre-fill sign-in details so the demo needs fewer clicks
+    if (!localStorage.getItem('gh_vol')) localStorage.setItem('gh_vol', JSON.stringify({ name: 'Volunteer Ravi', code: 'GOLD123' }));
+    if (!localStorage.getItem('gh_hname')) localStorage.setItem('gh_hname', 'City Care Hospital');
+
+    // ---------- Network log ----------
+    function log(src, arrow, text) {
+      const d = new Date();
+      const t = d.toLocaleTimeString('en-GB') + '.' + String(d.getMilliseconds()).padStart(3, '0');
+      const line = document.createElement('div');
+      line.innerHTML = '<span class="t">' + t + '</span> <span class="src ' + src + '">' + src.toUpperCase().padEnd(9, '\u00a0') + '</span> ' + arrow + ' ' + text;
+      $('log').prepend(line);
+      while ($('log').children.length > 200) $('log').lastChild.remove();
+    }
+
+    // Every frame is a real, separate WebSocket client. We "listen in" on its socket.
+    Object.entries(frames).forEach(([name, frame]) => {
+      frame.addEventListener('load', () => {
+        try {
+          const s = frame.contentWindow.eval('socket');
+          s.onAny((ev) => log(name, '⬇', ev));
+          s.onAnyOutgoing((ev) => log(name, '⬆', ev));
+          s.on('connect', () => log(name, '●', 'connected'));
+          s.on('disconnect', () => log(name, '●', 'disconnected'));
+          if (s.connected) log(name, '●', 'connected');
+        } catch (e) {}
+      });
+    });
+
+    // Hospital: click "Open dashboard" automatically (browser still asks for location once)
+    frames.hospital.addEventListener('load', () => {
+      setTimeout(() => {
+        try {
+          const d = frames.hospital.contentDocument;
+          if (!d.getElementById('startCard').hidden) d.getElementById('startBtn').click();
+        } catch (e) {}
+      }, 700);
+    });
+
+    // ---------- Offline simulation ----------
+    let off = false;
+    function setOffLabel() {
+      $('offBtn').textContent = off ? '📶 Bring reporter back online' : '📴 Simulate reporter offline';
+      $('offBtn').className = off ? 'danger' : '';
+    }
+    $('offBtn').addEventListener('click', () => {
+      off = !off;
+      try { frames.reporter.contentWindow.eval(off ? 'socket.disconnect()' : 'socket.connect()'); } catch (e) {}
+      log('system', '●', off ? 'Reporter network CUT' : 'Reporter network RESTORED');
+      setOffLabel();
+    });
+
+    // ---------- Start / restart ----------
+    function start() { Object.values(frames).forEach((f) => (f.src = f.dataset.src)); }
+    $('restartBtn').addEventListener('click', () => {
+      off = false; setOffLabel(); $('log').innerHTML = '';
+      Object.values(frames).forEach((f) => f.contentWindow.location.reload());
+    });
+    start();
+  </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoldenHour - Join the demo</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/extra.css">
+</head>
+<body>
+  <header><a href="/">Golden<span>Hour</span></a></header>
+  <main style="max-width:900px">
+    <div class="card center">
+      <h1>Join the live demo</h1>
+      <p class="muted" id="base"></p>
+    </div>
+    <div class="grid3">
+      <div class="card center"><h3>🚨 Reporter</h3><img class="qr" id="qrR" alt="QR"><p class="muted">Scan to press SOS</p></div>
+      <div class="card center"><h3>🙋 Volunteer</h3><img class="qr" id="qrV" alt="QR"><p class="muted">Code: GOLD123</p></div>
+      <div class="card center"><h3>🏥 Hospital</h3><img class="qr" id="qrH" alt="QR"><p class="muted">Open on the laptop</p></div>
+    </div>
+  </main>
+  <script>
+    const base = location.origin;
+    [['qrR', '/reporter.html'], ['qrV', '/volunteer.html'], ['qrH', '/hospital.html']].forEach(([id, path]) => {
+      document.getElementById(id).src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(base + path);
+    });
+    document.getElementById('base').textContent = base.startsWith('https')
+      ? 'Scan with the phone camera. Link: ' + base
+      : 'Open this page through your public https link, or phones cannot reach it. Right now: ' + base;
+  </script>
+</body>
+</html>

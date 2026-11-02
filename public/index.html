@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>GoldenHour - Emergency Response Network</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a href="/">Golden<span>Hour</span></a>
+    <a href="/demo.html" class="badge online" style="font-size:13px">▶ Live demo</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>The first hour<br>saves lives.</h1>
+      <p>One real-time network that connects people in trouble, volunteers nearby, and the right hospital, in under a second.</p>
+      <a class="cta" href="/demo.html">▶ Launch live demo</a>
+    </section>
+
+    <div class="stats">
+      <div class="stat"><b>&lt; 1 s</b><span>alert delivery</span></div>
+      <div class="stat"><b>3 km</b><span>volunteer radius</span></div>
+      <div class="stat"><b>0 ₹</b><span>fully free stack</span></div>
+    </div>
+
+    <div class="cards">
+      <a class="card home-card" href="/reporter.html"><div class="ico">🚨</div><div><h2>I need help</h2><p class="muted">Send an SOS with your live location, even with no signal.</p></div></a>
+      <a class="card home-card" href="/volunteer.html"><div class="ico">🙋</div><div><h2>I am a volunteer</h2><p class="muted">Get verified alerts for emergencies within 3 km.</p></div></a>
+      <a class="card home-card" href="/hospital.html"><div class="ico">🏥</div><div><h2>Hospital dashboard</h2><p class="muted">Receive pre-alerts and update beds and blood stock.</p></div></a>
+    </div>
+
+    <div class="card">
+      <h2>How it works</h2>
+      <div class="steps">
+        <div class="step"><i>1</i><div><b>SOS pressed</b><p class="muted">The phone captures type and GPS location and sends it over a WebSocket.</p></div></div>
+        <div class="step"><i>2</i><div><b>Nearest suitable hospital</b><p class="muted">The server checks beds or blood stock and picks the closest hospital that can help.</p></div></div>
+        <div class="step"><i>3</i><div><b>Volunteers within 3 km</b><p class="muted">The Haversine formula finds nearby verified volunteers and pushes the alert.</p></div></div>
+        <div class="step"><i>4</i><div><b>Help is on the way</b><p class="muted">Everyone sees live status: hospital ready, volunteer coming.</p></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Built with</h3>
+      <div class="chips">
+        <span class="chip">Node.js</span><span class="chip">Express</span><span class="chip">Socket.IO (WebSockets)</span>
+        <span class="chip">Leaflet + OpenStreetMap</span><span class="chip">Service Worker (PWA)</span><span class="chip">Haversine</span>
+        <span class="chip">Rate limiting</span><span class="chip">Retry with backoff</span>
+      </div>
+    </div>
+    <footer>GoldenHour · Computer Networks project</footer>
+  </main>
+
+  <script>
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+  </script>
+</body>
+</html>
