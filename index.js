@@ -14,7 +14,7 @@ const io = new Server(server, { pingInterval: 5000, pingTimeout: 5000 });   // h
 const PORT = process.env.PORT || 3000;
 
 // ---------- Settings ----------
-const RADIUS_KM = 3;
+const RADIUS_KM = 100;
 const MERGE_DISTANCE_KM = 0.2;
 const MERGE_WINDOW_MS = 10 * 60 * 1000;
 const MAX_SOS_PER_MINUTE = 3;
